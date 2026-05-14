@@ -1,0 +1,90 @@
+# Build downloadable command-line binaries.
+name: package_binaries
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+permissions: read-all
+
+jobs:
+  windows_x64:
+    name: Windows x64
+    runs-on: windows-2022
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.12'
+    - name: Install build dependencies
+      shell: pwsh
+      run: |
+        git clone https://github.com/libyal/vstools.git ..\vstools
+        .\synczlib.ps1
+    - name: Build
+      shell: pwsh
+      run: |
+        .\synclibs.ps1 -UseHead
+        .\autogen.ps1
+        .\build.ps1 -VisualStudioVersion 2022 -Configuration Release -Platform x64 -PythonPath ${{ env.pythonLocation }} -VSToolsOptions "--extend-with-x64 --no-python-dll"
+    - name: Stage artifact
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path artifacts\libpff-windows-x64 | Out-Null
+
+        $tools = Get-ChildItem -Path vs2022 -Recurse -File -Include pffinfo.exe,pffexport.exe
+        if ($tools.Count -ne 2) {
+          Write-Error "Expected pffinfo.exe and pffexport.exe in the Visual Studio build output."
+          exit 1
+        }
+        $tools | Copy-Item -Destination artifacts\libpff-windows-x64
+
+        $outputDirectories = $tools | ForEach-Object { $_.DirectoryName } | Select-Object -Unique
+        foreach ($directory in $outputDirectories) {
+          Get-ChildItem -Path $directory -File -Filter *.dll | Copy-Item -Destination artifacts\libpff-windows-x64
+        }
+
+        Copy-Item README,COPYING,COPYING.LESSER -Destination artifacts\libpff-windows-x64
+        Get-ChildItem artifacts\libpff-windows-x64
+    - uses: actions/upload-artifact@v4
+      with:
+        name: libpff-windows-x64
+        path: artifacts/libpff-windows-x64
+
+  ubuntu_x64:
+    name: Ubuntu x64
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v6
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get -y install autoconf automake autopoint build-essential git libtool pkg-config zlib1g-dev
+    - name: Build
+      env:
+        CC: gcc
+      run: |
+        tests/build.sh --enable-static-executables=yes --enable-multi-threading-support=no
+    - name: Stage artifact
+      run: |
+        set -e
+        mkdir -p artifacts/libpff-ubuntu-x64
+
+        for tool in pffinfo pffexport; do
+          if test -x "pfftools/.libs/${tool}"; then
+            cp "pfftools/.libs/${tool}" "artifacts/libpff-ubuntu-x64/${tool}"
+          elif test -x "pfftools/${tool}"; then
+            cp "pfftools/${tool}" "artifacts/libpff-ubuntu-x64/${tool}"
+          else
+            echo "Missing built tool: ${tool}" >&2
+            exit 1
+          fi
+        done
+
+        cp README COPYING COPYING.LESSER artifacts/libpff-ubuntu-x64
+        file artifacts/libpff-ubuntu-x64/pffinfo artifacts/libpff-ubuntu-x64/pffexport
+    - uses: actions/upload-artifact@v4
+      with:
+        name: libpff-ubuntu-x64
+        path: artifacts/libpff-ubuntu-x64
